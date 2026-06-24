@@ -393,18 +393,18 @@ function drawOverlay(){
     ctx.putImageData(ov,0,0);
   }
 
-  ctx.lineWidth=Math.max(2,iw/280);
   ctx.font=`bold ${Math.max(18,iw/32)}px -apple-system, sans-serif`;
   detections.forEach((d,idx)=>{
     const [x1,y1,x2,y2]=d.box;
-    ctx.strokeStyle = d.num!=null ? '#7bbf6a' : '#ff5a3c';
-    ctx.strokeRect(x1,y1,x2-x1,y2-y1);
     const label = d.num!=null ? `#${d.num}` : `${idx+1}`;
-    ctx.fillStyle = ctx.strokeStyle;
+    const color = d.num!=null ? '#7bbf6a' : '#ff5a3c';
     const tw=ctx.measureText(label).width+12, th=Math.max(24,iw/26);
-    ctx.fillRect(x1,y1-th,tw,th);
+    // place label near top-left of the fruit, just inside the mask area
+    const lx=x1, ly=Math.max(th, y1);
+    ctx.fillStyle=color;
+    ctx.fillRect(lx, ly-th, tw, th);
     ctx.fillStyle='#14110e';
-    ctx.fillText(label,x1+6,y1-th*0.22);
+    ctx.fillText(label, lx+6, ly-th*0.22);
   });
 }
 
