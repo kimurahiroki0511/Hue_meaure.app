@@ -133,6 +133,12 @@
   <div class="canvas-wrap" id="cwrap"><canvas id="cv"></canvas></div>
   <div class="hint" id="hint" style="display:none">
     検出された各トマトの枠をタップ → 個体番号と熟度を割り当て。前日の番号があれば思い出して同じ番号を振ってください。
+    <div style="margin-top:10px">
+      <label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="maskToggle" checked style="width:18px;height:18px">
+        計測範囲(マスク)を表示
+      </label>
+    </div>
   </div>
 
   <div class="det-list" id="detList">
@@ -179,6 +185,7 @@ let detections = [];   // {box(orig coords), conf, maskPixels, hue, num, label}
 let prevNums = [];     // remembered individual numbers from past records
 let records = [];      // accumulated CSV rows {date,num,hue,label,conf,maskpx}
 let activeIdx = -1;    // which detection is being edited in modal
+let showMask = true;   // overlay measured mask pixels
 
 const $ = id => document.getElementById(id);
 const statusEl=$('status'), pickBtn=$('pickBtn'), fileEl=$('file');
@@ -354,7 +361,7 @@ async function runDetection(img){
       const swatch=`rgb(${rr/n|0},${gg/n|0},${bb/n|0})`;
       detections.push({
         box:[bx1,by1,bx2,by2], conf:d.conf, maskPx, hue,
-        swatch, num:null, label:null
+        swatch, num:null, label:null, maskCoords
       });
     });
 
@@ -370,6 +377,22 @@ function drawOverlay(){
   if(!curImg) return;
   const iw=curImg.naturalWidth, ih=curImg.naturalHeight;
   ctx.drawImage(curImg,0,0);
+
+  // optionally paint masks so you can see exactly which pixels are measured
+  if(showMask){
+    const ov=ctx.getImageData(0,0,iw,ih); const od=ov.data;
+    detections.forEach(d=>{
+      const set = d.num!=null;
+      const cr = set?123:255, cg = set?191:90, cb = set?106:60; // green if numbered, orange if not
+      (d.maskCoords||[]).forEach(o=>{
+        od[o]   = od[o]*0.5 + cr*0.5;
+        od[o+1] = od[o+1]*0.5 + cg*0.5;
+        od[o+2] = od[o+2]*0.5 + cb*0.5;
+      });
+    });
+    ctx.putImageData(ov,0,0);
+  }
+
   ctx.lineWidth=Math.max(2,iw/280);
   ctx.font=`bold ${Math.max(18,iw/32)}px -apple-system, sans-serif`;
   detections.forEach((d,idx)=>{
@@ -406,6 +429,8 @@ function renderDetList(){
 }
 
 // allow tapping the canvas to open the nearest detection
+$('maskToggle').addEventListener('change',e=>{ showMask=e.target.checked; drawOverlay(); });
+
 cv.addEventListener('click',e=>{
   const rect=cv.getBoundingClientRect();
   const scale=cv.width/rect.width;
