@@ -132,7 +132,7 @@
 
   <div class="canvas-wrap" id="cwrap"><canvas id="cv"></canvas></div>
   <div class="hint" id="hint" style="display:none">
-    検出された各トマトの枠をタップ → 個体番号と熟度を割り当て。前日の番号があれば思い出して同じ番号を振ってください。
+    検出された各トマトをタップ → 個体番号と熟度を割り当て。前日の番号があれば思い出して同じ番号を振ってください。誤検出は<b>長押しで削除</b>できます。
     <div style="margin-top:10px">
       <label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
         <input type="checkbox" id="maskToggle" checked style="width:18px;height:18px">
@@ -332,18 +332,33 @@ async function runDetection(img){
       const [bx2,by2]=inv(d.box[2],d.box[3]);
       const ox1=Math.max(0,Math.floor(bx1)),oy1=Math.max(0,Math.floor(by1));
       const ox2=Math.min(iw,Math.ceil(bx2)),oy2=Math.min(ih,Math.ceil(by2));
-      let sumH=0,cntH=0,maskPx=0;
+      let cntH=0,maskPx=0;
       // accumulate hue via circular mean to be safe near 0/360 wrap
       let sx=0, sy=0;
       const maskCoords=[];
+      // bilinear sample of the prototype-combined mask at fractional (gx,gy) in 160-grid
+      const maskAt=(gx,gy)=>{
+        const x0=Math.floor(gx), y0=Math.floor(gy);
+        const x1=Math.min(PW-1,x0+1), y1=Math.min(PH-1,y0+1);
+        const fx=gx-x0, fy=gy-y0;
+        const xa=Math.max(0,Math.min(PW-1,x0)), ya=Math.max(0,Math.min(PH-1,y0));
+        let v00=0,v10=0,v01=0,v11=0;
+        const p00=ya*PW+xa, p10=ya*PW+x1, p01=y1*PW+xa, p11=y1*PW+x1;
+        for(let c=0;c<PC;c++){
+          const cp=c*protoPlane;
+          v00+=d.coef[c]*proto[cp+p00];
+          v10+=d.coef[c]*proto[cp+p10];
+          v01+=d.coef[c]*proto[cp+p01];
+          v11+=d.coef[c]*proto[cp+p11];
+        }
+        const top=v00*(1-fx)+v10*fx, bot=v01*(1-fx)+v11*fx;
+        return sigmoid(top*(1-fy)+bot*fy);
+      };
       for(let oy=oy1;oy<oy2;oy++){
         for(let ox=ox1;ox<ox2;ox++){
           const lx=ox*lb.r+lb.dx, ly=oy*lb.r+lb.dy;
-          const px=Math.min(PW-1,Math.max(0,Math.floor(lx/IMG*PW)));
-          const py=Math.min(PH-1,Math.max(0,Math.floor(ly/IMG*PH)));
-          let acc=0; const poff=py*PW+px;
-          for(let c=0;c<PC;c++) acc+=d.coef[c]*proto[c*protoPlane+poff];
-          if(sigmoid(acc)>MASK_THR){
+          const gx=lx/IMG*PW, gy=ly/IMG*PH;
+          if(maskAt(gx,gy)>MASK_THR){
             maskPx++;
             const o=(oy*iw+ox)*4;
             const h=rgb2hue(src[o],src[o+1],src[o+2]);
@@ -431,10 +446,8 @@ function renderDetList(){
 // allow tapping the canvas to open the nearest detection
 $('maskToggle').addEventListener('change',e=>{ showMask=e.target.checked; drawOverlay(); });
 
-cv.addEventListener('click',e=>{
-  const rect=cv.getBoundingClientRect();
-  const scale=cv.width/rect.width;
-  const x=(e.clientX-rect.left)*scale, y=(e.clientY-rect.top)*scale;
+// find smallest detection whose box contains the point
+function detAt(x,y){
   let best=-1,bestA=Infinity;
   detections.forEach((d,idx)=>{
     const [x1,y1,x2,y2]=d.box;
@@ -442,8 +455,66 @@ cv.addEventListener('click',e=>{
       const a=(x2-x1)*(y2-y1); if(a<bestA){bestA=a;best=idx;}
     }
   });
-  if(best>=0) openModal(best);
+  return best;
+}
+function evtToCanvas(e){
+  const rect=cv.getBoundingClientRect();
+  const scale=cv.width/rect.width;
+  return [ (e.clientX-rect.left)*scale, (e.clientY-rect.top)*scale ];
+}
+
+let lpTimer=null, lpStart=null, lpIdx=-1, lpFired=false;
+const LONG_MS=500, MOVE_TOL=14; // ms to trigger, px movement that cancels
+
+cv.addEventListener('pointerdown',e=>{
+  const [x,y]=evtToCanvas(e);
+  lpStart=[e.clientX,e.clientY];
+  lpIdx=detAt(x,y);
+  lpFired=false;
+  if(lpIdx<0) return;
+  lpTimer=setTimeout(()=>{
+    lpFired=true;
+    deleteDetection(lpIdx);
+  },LONG_MS);
 });
+cv.addEventListener('pointermove',e=>{
+  if(!lpStart) return;
+  const dx=e.clientX-lpStart[0], dy=e.clientY-lpStart[1];
+  if(Math.hypot(dx,dy)>MOVE_TOL){ clearTimeout(lpTimer); lpTimer=null; }
+});
+cv.addEventListener('pointerup',e=>{
+  if(lpTimer){ clearTimeout(lpTimer); lpTimer=null; }
+  if(lpFired){ lpFired=false; lpStart=null; return; } // long-press already handled
+  const [x,y]=evtToCanvas(e);
+  const idx=detAt(x,y);
+  if(idx>=0) openModal(idx);
+  lpStart=null;
+});
+cv.addEventListener('pointercancel',()=>{ if(lpTimer){clearTimeout(lpTimer);lpTimer=null;} lpStart=null; });
+
+let lastDeleted=null;
+function deleteDetection(idx){
+  if(idx<0||idx>=detections.length) return;
+  const d=detections[idx];
+  if(!confirm(`このトマト${d.num!=null?('(#'+d.num+')'):''}を誤検出として削除しますか?`)) return;
+  lastDeleted={idx, det:d};
+  detections.splice(idx,1);
+  drawOverlay(); renderDetList();
+  showUndo();
+}
+function showUndo(){
+  append('<span class="err">1個を削除しました。</span> <a href="#" id="undoLink" style="color:var(--blue)">元に戻す</a>');
+  const ul=document.getElementById('undoLink');
+  if(ul) ul.onclick=(ev)=>{
+    ev.preventDefault();
+    if(lastDeleted){
+      detections.splice(Math.min(lastDeleted.idx,detections.length),0,lastDeleted.det);
+      lastDeleted=null;
+      drawOverlay(); renderDetList();
+      append('<span class="ok">削除を取り消しました。</span>');
+    }
+  };
+}
 
 // ---------- modal ----------
 const modalBg=$('modalBg');
