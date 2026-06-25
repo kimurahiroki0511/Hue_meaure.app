@@ -69,6 +69,12 @@
   .rec-row .rdelta { font-size: 13px; font-weight: 650; width: 64px; text-align: right; flex: none; }
   .rec-row .rdelta.down { color: var(--accent); }
   .rec-row .rdelta.up { color: var(--ok); }
+  .rec-row .rdel {
+    width: 32px; height: 32px; flex: none; padding: 0; border-radius: 8px;
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    font-size: 14px; line-height: 1;
+  }
+  .rec-row .rdel:active { background: var(--accent); color: #14110e; border-color: transparent; }
   .rec-row .rlabel {
     font-size: 11px; padding: 3px 8px; border-radius: 999px;
     border: 1px solid var(--line); color: var(--muted); flex: none;
@@ -217,7 +223,7 @@
     <p id="modalSub">このトマトに番号を割り当てます。</p>
     <div id="prevNums"></div>
     <div class="new-num">
-      <input type="number" id="newNumInput" placeholder="新しい番号" inputmode="numeric">
+      <input type="text" id="newNumInput" placeholder="例: 1-1（画像番号-個体番号）" inputmode="text" autocapitalize="off" autocomplete="off">
       <button id="newNumBtn" style="flex:none;padding:12px 16px">追加</button>
     </div>
     <div class="label-row" id="labelRow"></div>
@@ -234,6 +240,19 @@
 const MODEL_URL = 'best_q.onnx';
 const IMG = 640, CONF = 0.35, MASK_THR = 0.5, IOU_DEDUP = 0.7;
 const LABELS = ['Green', 'Yellow', 'Orange', 'Red'];
+// natural sort so 1-2 < 1-10 < 2-1 (compare segment by segment, numbers numerically)
+function natCompare(a,b){
+  const pa=String(a).split('-'), pb=String(b).split('-');
+  const len=Math.max(pa.length,pb.length);
+  for(let i=0;i<len;i++){
+    const xa=pa[i]??'', xb=pb[i]??'';
+    const na=parseInt(xa,10), nb=parseInt(xb,10);
+    const bothNum=!isNaN(na)&&!isNaN(nb);
+    if(bothNum){ if(na!==nb) return na-nb; }
+    else { if(xa!==xb) return xa<xb?-1:1; }
+  }
+  return 0;
+}
 const LABEL_RANGES = {
   'Green':  '60–160',
   'Yellow': '40–60',
@@ -584,14 +603,16 @@ function openModal(idx){
 }
 function assignNum(n){
   if(activeIdx<0) return;
+  n=String(n).trim();
+  if(!n) return;
   detections[activeIdx].num=n;
-  if(!prevNums.includes(n)){ prevNums.push(n); prevNums.sort((a,b)=>a-b); }
+  if(!prevNums.includes(n)){ prevNums.push(n); prevNums.sort(natCompare); }
   modalBg.style.display='none';
   drawOverlay(); renderDetList();
 }
 $('newNumBtn').onclick=()=>{
-  const v=parseInt($('newNumInput').value,10);
-  if(Number.isFinite(v)) assignNum(v);
+  const v=$('newNumInput').value.trim();
+  if(v) assignNum(v);
 };
 $('modalClear').onclick=()=>{
   if(activeIdx>=0){ detections[activeIdx].num=null; detections[activeIdx].label=null; }
@@ -658,11 +679,12 @@ $('csvFile').addEventListener('change',e=>{
       for(let i=start;i<rows.length;i++){
         if(!rows[i].trim()) continue;
         const [date,num,hue,label,conf,maskpx]=rows[i].split(',');
-        imported.push({date,num:Number(num),hue,label,conf,maskpx});
-        if(num!=='') nums.add(Number(num));
+        const id=(num||'').trim();
+        imported.push({date,num:id,hue,label,conf,maskpx});
+        if(id!=='') nums.add(id);
       }
       records=imported;
-      prevNums=[...nums].filter(n=>Number.isFinite(n)).sort((a,b)=>a-b);
+      prevNums=[...nums].filter(n=>n!=='').sort(natCompare);
       saveLocal(); refreshSavedCount();
       if($('recordsView').style.display!=='none') renderRecords();
       log(`CSVを読み込みました。${records.length}行・個体番号 ${prevNums.join(', ')||'なし'}。続きから追記できます。`,'ok');
@@ -687,24 +709,24 @@ function renderRecords(){
     body.innerHTML=`<div class="rec-empty">まだ記録がありません。<br>「撮影」タブでトマトを記録すると、ここに個体ごとのHueの推移が表示されます。</div>`;
     return;
   }
-  // group by num
+  // group by num, keeping each record's index in the records array
   const byNum={};
-  records.forEach(r=>{
+  records.forEach((r,gi)=>{
     const n=String(r.num);
-    (byNum[n]=byNum[n]||[]).push(r);
+    (byNum[n]=byNum[n]||[]).push({r, gi});
   });
   // sort numbers ascending, rows by date ascending
-  const nums=Object.keys(byNum).sort((a,b)=>Number(a)-Number(b));
+  const nums=Object.keys(byNum).sort(natCompare);
   let html='';
   nums.forEach(n=>{
-    const rows=byNum[n].slice().sort((a,b)=>String(a.date).localeCompare(String(b.date)));
-    const last=rows[rows.length-1];
-    const first=rows[0];
+    const rows=byNum[n].slice().sort((a,b)=>String(a.r.date).localeCompare(String(b.r.date)));
+    const last=rows[rows.length-1].r;
+    const first=rows[0].r;
     const lastHue = last.hue!=='' ? Number(last.hue) : -1;
     const overall = (first.hue!=='' && last.hue!=='') ? (Number(last.hue)-Number(first.hue)) : null;
     html+=`<div class="rec-card">
       <div class="rec-head">
-        <div class="badge" style="background:${colorForHue(lastHue)}">${n}</div>
+        <div class="badge" style="background:${colorForHue(lastHue)};font-size:${n.length>=4?'13px':n.length===3?'15px':'18px'}">${n}</div>
         <div class="rec-meta">
           <div class="t">個体 #${n}</div>
           <div class="s">${rows.length}回記録 ・ 最新 Hue ${lastHue>=0?lastHue.toFixed(1):'—'}${overall!=null?` ・ 通算 ${overall>=0?'+':''}${overall.toFixed(1)}`:''}</div>
@@ -712,7 +734,7 @@ function renderRecords(){
       </div>
       <div class="rec-rows">`;
     let prev=null;
-    rows.forEach(r=>{
+    rows.forEach(({r,gi})=>{
       const hue = r.hue!=='' ? Number(r.hue) : -1;
       let delta='', dcls='';
       if(prev!=null && hue>=0){
@@ -726,11 +748,24 @@ function renderRecords(){
         <div class="rhue" style="color:${colorForHue(hue)}">${hue>=0?hue.toFixed(1):'—'}</div>
         ${r.label?`<div class="rlabel">${r.label}</div>`:''}
         <div class="rdelta ${dcls}">${delta}</div>
+        <button class="rdel" data-gi="${gi}" title="この記録を削除">✕</button>
       </div>`;
     });
     html+=`</div></div>`;
   });
   body.innerHTML=html;
+  // wire up per-row delete buttons
+  body.querySelectorAll('.rdel').forEach(btn=>{
+    btn.onclick=()=>{
+      const gi=Number(btn.getAttribute('data-gi'));
+      const r=records[gi];
+      if(!r) return;
+      if(!confirm(`この記録を削除しますか?\n\n個体 #${r.num} ・ ${r.date} ・ Hue ${r.hue||'—'}`)) return;
+      records.splice(gi,1);
+      saveLocal(); refreshSavedCount();
+      renderRecords();
+    };
+  });
 }
 
 function switchTab(which){
