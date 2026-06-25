@@ -32,6 +32,48 @@
   }
   header h1 { font-size: 16px; margin: 0; font-weight: 650; }
   header .date { font-size: 13px; color: var(--muted); }
+  .tabs {
+    display: flex; gap: 0; border-bottom: 1px solid var(--line);
+    position: sticky; top: 53px; background: var(--bg); z-index: 9;
+  }
+  .tab {
+    flex: 1; border: none; border-radius: 0; background: transparent;
+    color: var(--muted); font-size: 15px; font-weight: 650; padding: 14px;
+    border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .rec-card {
+    border: 1px solid var(--line); border-radius: 14px; margin-bottom: 14px;
+    background: var(--panel); overflow: hidden;
+  }
+  .rec-head {
+    display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel2);
+  }
+  .rec-head .badge {
+    width: 40px; height: 40px; border-radius: 10px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: 800; color: #14110e; background: var(--accent);
+  }
+  .rec-head .rec-meta { flex: 1; }
+  .rec-head .rec-meta .t { font-size: 16px; font-weight: 700; }
+  .rec-head .rec-meta .s { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .rec-rows { padding: 6px 8px 10px; }
+  .rec-row {
+    display: flex; align-items: center; gap: 12px; padding: 11px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  .rec-row:last-child { border-bottom: none; }
+  .rec-row .rdate { font-size: 14px; color: var(--muted); width: 92px; flex: none; }
+  .rec-row .rhue { font-size: 20px; font-weight: 750; flex: 1; }
+  .rec-row .rdelta { font-size: 13px; font-weight: 650; width: 64px; text-align: right; flex: none; }
+  .rec-row .rdelta.down { color: var(--accent); }
+  .rec-row .rdelta.up { color: var(--ok); }
+  .rec-row .rlabel {
+    font-size: 11px; padding: 3px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); flex: none;
+  }
+  .rec-empty { color: var(--muted); font-size: 14px; text-align: center; padding: 40px 16px; line-height: 1.7; }
   main { padding: 16px; max-width: 760px; margin: 0 auto; padding-bottom: 120px; }
   .row { display: flex; gap: 10px; }
   .row > * { flex: 1; }
@@ -127,7 +169,12 @@
   <h1>トマトHue記録</h1>
   <span class="date" id="dateLabel"></span>
 </header>
+<nav class="tabs">
+  <button class="tab active" id="tabCapture">撮影</button>
+  <button class="tab" id="tabRecords">記録</button>
+</nav>
 <main>
+ <section id="captureView">
   <button class="primary" id="pickBtn" disabled>読み込み中…</button>
   <input type="file" id="file" accept="image/*" capture="environment">
 
@@ -135,7 +182,7 @@
 
   <div class="canvas-wrap" id="cwrap"><canvas id="cv"></canvas></div>
   <div class="hint" id="hint" style="display:none">
-    検出された各トマトをタップ → 個体番号と熟度を割り当て。前日の番号があれば思い出して同じ番号を振ってください。誤検出は<b>長押しで削除</b>できます。
+    検出された各トマトをタップ → 個体番号と熟度を割り当て。前日の番号があれば思い出して同じ番号を振ってください。誤検出にしたいトマトはタップして「誤検出にする」を押してください。
     <div style="margin-top:10px">
       <label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
         <input type="checkbox" id="maskToggle" checked style="width:18px;height:18px">
@@ -148,6 +195,11 @@
     <h3>検出されたトマト</h3>
     <div id="detItems"></div>
   </div>
+ </section>
+
+ <section id="recordsView" style="display:none">
+  <div id="recordsBody"></div>
+ </section>
 </main>
 
 <div class="footer-bar" id="footerBar" style="display:none">
@@ -569,8 +621,9 @@ saveBtn.addEventListener('click',()=>{
     added++;
   });
   saveLocal(); refreshSavedCount();
-  log(`<b>記録しました</b>  ${added}個を ${date} として追加。合計 ${records.length}行。`,'ok');
-  append('「CSV書出」で必ずファイルに保存してください。');
+  if($('recordsView').style.display!=='none') renderRecords();
+  log(`<b>記録しました</b>  ${added}個を ${todayStr()} として追加。合計 ${records.length}行。`,'ok');
+  append('「記録」タブで個体ごとの推移を確認できます。学習用にCSVも書き出せます。');
   // reset current photo state
   detections=[]; detItems.innerHTML=''; detList.style.display='none';
   cwrap.style.display='none'; hint.style.display='none'; saveBtn.disabled=true;
@@ -611,11 +664,85 @@ $('csvFile').addEventListener('change',e=>{
       records=imported;
       prevNums=[...nums].filter(n=>Number.isFinite(n)).sort((a,b)=>a-b);
       saveLocal(); refreshSavedCount();
+      if($('recordsView').style.display!=='none') renderRecords();
       log(`CSVを読み込みました。${records.length}行・個体番号 ${prevNums.join(', ')||'なし'}。続きから追記できます。`,'ok');
     }catch(err){ log('CSV読み込み失敗: '+err.message,'err'); }
   };
   reader.readAsText(f); e.target.value='';
 });
+
+// ---------- tabs & records view ----------
+function colorForHue(h){
+  if(h<0) return 'var(--muted)';
+  const lab=hueToLabel(h);
+  if(lab==='Red') return '#ff5a3c';
+  if(lab==='Orange') return '#ff9a3c';
+  if(lab==='Yellow') return '#e8c84a';
+  if(lab==='Green') return '#7bbf6a';
+  return 'var(--muted)';
+}
+function renderRecords(){
+  const body=$('recordsBody');
+  if(!records.length){
+    body.innerHTML=`<div class="rec-empty">まだ記録がありません。<br>「撮影」タブでトマトを記録すると、ここに個体ごとのHueの推移が表示されます。</div>`;
+    return;
+  }
+  // group by num
+  const byNum={};
+  records.forEach(r=>{
+    const n=String(r.num);
+    (byNum[n]=byNum[n]||[]).push(r);
+  });
+  // sort numbers ascending, rows by date ascending
+  const nums=Object.keys(byNum).sort((a,b)=>Number(a)-Number(b));
+  let html='';
+  nums.forEach(n=>{
+    const rows=byNum[n].slice().sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+    const last=rows[rows.length-1];
+    const first=rows[0];
+    const lastHue = last.hue!=='' ? Number(last.hue) : -1;
+    const overall = (first.hue!=='' && last.hue!=='') ? (Number(last.hue)-Number(first.hue)) : null;
+    html+=`<div class="rec-card">
+      <div class="rec-head">
+        <div class="badge" style="background:${colorForHue(lastHue)}">${n}</div>
+        <div class="rec-meta">
+          <div class="t">個体 #${n}</div>
+          <div class="s">${rows.length}回記録 ・ 最新 Hue ${lastHue>=0?lastHue.toFixed(1):'—'}${overall!=null?` ・ 通算 ${overall>=0?'+':''}${overall.toFixed(1)}`:''}</div>
+        </div>
+      </div>
+      <div class="rec-rows">`;
+    let prev=null;
+    rows.forEach(r=>{
+      const hue = r.hue!=='' ? Number(r.hue) : -1;
+      let delta='', dcls='';
+      if(prev!=null && hue>=0){
+        const d=hue-prev;
+        if(Math.abs(d)>=0.05){ delta=(d>=0?'+':'')+d.toFixed(1); dcls=d<0?'down':'up'; }
+        else { delta='±0'; }
+      }
+      if(hue>=0) prev=hue;
+      html+=`<div class="rec-row">
+        <div class="rdate">${r.date}</div>
+        <div class="rhue" style="color:${colorForHue(hue)}">${hue>=0?hue.toFixed(1):'—'}</div>
+        ${r.label?`<div class="rlabel">${r.label}</div>`:''}
+        <div class="rdelta ${dcls}">${delta}</div>
+      </div>`;
+    });
+    html+=`</div></div>`;
+  });
+  body.innerHTML=html;
+}
+
+function switchTab(which){
+  const cap = which==='capture';
+  $('tabCapture').classList.toggle('active', cap);
+  $('tabRecords').classList.toggle('active', !cap);
+  $('captureView').style.display = cap?'block':'none';
+  $('recordsView').style.display = cap?'none':'block';
+  if(!cap) renderRecords();
+}
+$('tabCapture').onclick=()=>switchTab('capture');
+$('tabRecords').onclick=()=>switchTab('records');
 
 init();
 </script>
