@@ -247,8 +247,24 @@ function getPhoto(id){
 }
 function delPhoto(id){
   return new Promise(res=>{
-    try{const tx=db.transaction('photos','readwrite');tx.objectStore('photos').delete(id);tx.oncomplete=()=>res();}
+    try{const tx=db.transaction('photos','readwrite');const s=tx.objectStore('photos');s.delete(id);s.delete('ov_'+id);tx.oncomplete=()=>res();}
     catch(e){res();}
+  });
+}
+// overlay (boxes + mask grids + numbers) stored as JSON under key ov_<photoId>
+function putOverlay(id,obj){
+  return new Promise((res,rej)=>{
+    const tx=db.transaction('photos','readwrite');
+    tx.objectStore('photos').put(JSON.stringify(obj),'ov_'+id);
+    tx.oncomplete=()=>res(); tx.onerror=e=>rej(e.target.error);
+  });
+}
+function getOverlay(id){
+  return new Promise(res=>{
+    try{const tx=db.transaction('photos','readonly');const rq=tx.objectStore('photos').get('ov_'+id);
+      rq.onsuccess=()=>{ try{res(rq.result?JSON.parse(rq.result):null);}catch(e){res(null);} };
+      rq.onerror=()=>res(null);}
+    catch(e){res(null);}
   });
 }
 
@@ -428,7 +444,19 @@ async function runDetection(img){
       let rr=0,gg=0,bb=0; maskCoords.forEach(o=>{rr+=src[o];gg+=src[o+1];bb+=src[o+2];});
       const n=maskCoords.length||1;
       const swatch=`rgb(${rr/n|0},${gg/n|0},${bb/n|0})`;
-      detections.push({box:[bx1,by1,bx2,by2],conf:d.conf,maskPx,hue,swatch,num:null,label:null,maskCoords,rejected:false});
+      // compact mask grid (GRID×GRID over the box) for redrawing later in records
+      const GRID=28;
+      let gridStr='';
+      const bw=Math.max(1,bx2-bx1), bh=Math.max(1,by2-by1);
+      for(let gj=0;gj<GRID;gj++){
+        for(let gi=0;gi<GRID;gi++){
+          const ox=bx1+(gi+0.5)/GRID*bw, oy=by1+(gj+0.5)/GRID*bh;
+          const lx=ox*lb.r+lb.dx, ly=oy*lb.r+lb.dy;
+          gridStr += (maskAt(lx/IMG*PW, ly/IMG*PH)>MASK_THR) ? '1':'0';
+        }
+      }
+      detections.push({box:[bx1,by1,bx2,by2],conf:d.conf,maskPx,hue,swatch,num:null,label:null,maskCoords,rejected:false,
+        grid:gridStr, gridN:GRID, imgW:iw, imgH:ih});
     });
     // order detections left→right (and top→bottom when horizontally close)
     // so the list matches reading order and you can number 1,2,3 from the left
@@ -566,6 +594,18 @@ saveBtn.addEventListener('click',async()=>{
   if(curPhotoDataUrl && db){
     photoId=`${selectedCluster}_${date}_${Date.now()}`;
     try{ await putPhoto(photoId,curPhotoDataUrl); }catch(e){ photoId=''; }
+    // save overlay (normalized boxes, mask grids, numbers, labels) for redrawing in records
+    if(photoId){
+      try{
+        const iw=detections[0]?.imgW||1, ih=detections[0]?.imgH||1;
+        const items=toSave.map(d=>({
+          num:String(d.num), label:d.label||'',
+          box:[d.box[0]/iw, d.box[1]/ih, d.box[2]/iw, d.box[3]/ih],
+          grid:d.grid, gridN:d.gridN
+        }));
+        await putOverlay(photoId,{items});
+      }catch(e){}
+    }
   }
   let added=0;
   toSave.forEach(d=>{
@@ -671,10 +711,59 @@ async function renderRecords(){
   }
   else if(navState.level==='individuals'){
     const drs=records.filter(r=>r.cluster===navState.cluster && r.date===navState.date);
-    // big photo for the day
+    // big photo for the day with number+mask overlay and a toggle
     const photoRec=drs.find(r=>r.photoId);
-    if(photoRec){ const du=await getPhoto(photoRec.photoId);
-      if(du){ const im=document.createElement('img'); im.className='big-photo'; im.src=du; body.appendChild(im); } }
+    if(photoRec){
+      const du=await getPhoto(photoRec.photoId);
+      const ov=await getOverlay(photoRec.photoId);
+      if(du){
+        const wrap=document.createElement('div');
+        wrap.style.marginBottom='14px';
+        const cvr=document.createElement('canvas'); cvr.className='big-photo'; cvr.style.marginBottom='8px';
+        wrap.appendChild(cvr);
+        if(ov && ov.items && ov.items.length){
+          const tgl=document.createElement('label');
+          tgl.style.cssText='display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--text)';
+          tgl.innerHTML='<input type="checkbox" id="recOvToggle" checked style="width:18px;height:18px">番号・マスクを表示';
+          wrap.appendChild(tgl);
+        }
+        body.appendChild(wrap);
+        const img=new Image();
+        img.onload=()=>{
+          const draw=(showOv)=>{
+            const W=img.naturalWidth,H=img.naturalHeight;
+            cvr.width=W; cvr.height=H;
+            const c=cvr.getContext('2d');
+            c.drawImage(img,0,0);
+            if(showOv && ov && ov.items){
+              // masks first
+              ov.items.forEach(it=>{
+                if(!it.grid) return;
+                const N=it.gridN||28;
+                const x1=it.box[0]*W,y1=it.box[1]*H,x2=it.box[2]*W,y2=it.box[3]*H;
+                const cw=(x2-x1)/N, ch=(y2-y1)/N;
+                c.fillStyle='rgba(123,191,106,0.45)';
+                for(let gj=0;gj<N;gj++)for(let gi=0;gi<N;gi++){
+                  if(it.grid[gj*N+gi]==='1') c.fillRect(x1+gi*cw, y1+gj*ch, cw+0.5, ch+0.5);
+                }
+              });
+              // labels
+              c.font=`bold ${Math.max(20,W/30)}px -apple-system,sans-serif`;
+              ov.items.forEach(it=>{
+                const x1=it.box[0]*W,y1=it.box[1]*H;
+                const label=`#${it.num}`;
+                const tw=c.measureText(label).width+12, th=Math.max(26,W/24);
+                c.fillStyle='#7bbf6a'; c.fillRect(x1,Math.max(th,y1)-th,tw,th);
+                c.fillStyle='#14110e'; c.fillText(label,x1+6,Math.max(th,y1)-th*0.22);
+              });
+            }
+          };
+          draw(true);
+          const t=$('recOvToggle'); if(t) t.addEventListener('change',e=>draw(e.target.checked));
+        };
+        img.src=du;
+      }
+    }
     // individuals sorted numerically
     drs.sort((a,b)=>Number(a.num)-Number(b.num));
     drs.forEach((r)=>{
