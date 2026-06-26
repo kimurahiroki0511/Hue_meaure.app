@@ -95,6 +95,11 @@
   .folder .fmeta{padding:10px 12px;}
   .folder .fmeta .t{font-size:15px;font-weight:700;}
   .folder .fmeta .s{font-size:11px;color:var(--muted);margin-top:2px;}
+  .folder{position:relative;}
+  .folder .fdel{position:absolute;top:8px;right:8px;width:34px;height:34px;border-radius:9px;
+    background:rgba(20,17,14,.72);border:1px solid var(--line);color:#fff;font-size:15px;
+    display:flex;align-items:center;justify-content:center;z-index:2;}
+  .folder .fdel:active{background:var(--accent);color:#14110e;border-color:transparent;}
   .rec-row{display:flex;align-items:center;gap:12px;padding:12px 10px;border:1px solid var(--line);
     border-radius:10px;margin-bottom:8px;background:var(--panel);}
   .rec-row .rnum{width:48px;height:40px;flex:none;border-radius:8px;background:var(--accent);color:#14110e;
@@ -641,17 +646,49 @@ $('exportBtn').addEventListener('click',()=>{
 });
 
 // ---------- records browser (3 levels) ----------
-let navState={level:'clusters', cluster:null, date:null}; // levels: clusters / dates / individuals
+let navState={level:'clusters', cluster:null, date:null, photoId:null}; // levels: clusters / dates / sessions / individuals
 
 function setCrumbs(){
   const c=$('crumbs'); c.innerHTML='';
   const mk=(label,fn)=>{const a=document.createElement('a');a.href='#';a.textContent=label;a.onclick=e=>{e.preventDefault();fn();};return a;};
   const sep=()=>{const s=document.createElement('span');s.textContent='›';return s;};
-  c.appendChild(mk('房一覧',()=>{navState={level:'clusters',cluster:null,date:null};renderRecords();}));
+  c.appendChild(mk('房一覧',()=>{navState={level:'clusters',cluster:null,date:null,photoId:null};renderRecords();}));
   if(navState.cluster){ c.appendChild(sep());
-    c.appendChild(mk(navState.cluster,()=>{navState={level:'dates',cluster:navState.cluster,date:null};renderRecords();})); }
+    c.appendChild(mk(navState.cluster,()=>{navState={level:'dates',cluster:navState.cluster,date:null,photoId:null};renderRecords();})); }
   if(navState.date){ c.appendChild(sep());
-    const s=document.createElement('span');s.style.color='var(--text)';s.textContent=navState.date;c.appendChild(s); }
+    // make date a link if we are inside a session, otherwise plain text
+    if(navState.photoId){
+      c.appendChild(mk(navState.date,()=>{navState={level:'sessions',cluster:navState.cluster,date:navState.date,photoId:null};renderRecords();}));
+    } else {
+      const s=document.createElement('span');s.style.color='var(--text)';s.textContent=navState.date;c.appendChild(s);
+    }
+  }
+  if(navState.photoId && navState.level==='individuals'){
+    // show session label (時刻)
+    c.appendChild(sep());
+    const t=photoIdToTimeLabel(navState.photoId);
+    const s=document.createElement('span');s.style.color='var(--text)';s.textContent=t;c.appendChild(s);
+  }
+}
+// derive a short time label from photoId (format: cluster_date_timestamp)
+function photoIdToTimeLabel(pid){
+  const parts=String(pid).split('_');
+  const ts=Number(parts[parts.length-1]);
+  if(!isFinite(ts)) return '撮影回';
+  const d=new Date(ts);
+  const p=n=>String(n).padStart(2,'0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// delete all records (and orphaned photos) matching a filter
+function deleteRecordsWhere(pred){
+  const removed=records.filter(pred);
+  const keptPhotoIds=new Set(records.filter(r=>!pred(r)).map(r=>r.photoId).filter(Boolean));
+  records=records.filter(r=>!pred(r));
+  // delete photos/overlays that no longer have any record
+  const orphan=[...new Set(removed.map(r=>r.photoId).filter(Boolean))].filter(id=>!keptPhotoIds.has(id));
+  orphan.forEach(id=>delPhoto(id));
+  saveMeta(); refreshSavedCount();
 }
 
 async function renderRecords(){
@@ -673,12 +710,18 @@ async function renderRecords(){
       // newest photo for thumbnail
       const withPhoto=rs.filter(r=>r.photoId).sort((a,b)=>b.date.localeCompare(a.date));
       const card=document.createElement('div'); card.className='folder';
+      const fdel=document.createElement('button'); fdel.className='fdel'; fdel.textContent='✕';
+      fdel.onclick=(e)=>{ e.stopPropagation();
+        if(!confirm(`${c} を削除しますか?\n\n中の ${dates.length}日分・${rs.length}件の記録と写真もすべて消えます。`)) return;
+        deleteRecordsWhere(r=>r.cluster===c); renderRecords();
+      };
+      card.appendChild(fdel);
       const thumb=document.createElement('div'); thumb.className='thumb empty'; thumb.textContent='🍅';
       card.appendChild(thumb);
       const meta=document.createElement('div'); meta.className='fmeta';
       meta.innerHTML=`<div class="t">${c}</div><div class="s">${dates.length}日分 ・ ${rs.length}件</div>`;
       card.appendChild(meta);
-      card.onclick=()=>{ navState={level:'dates',cluster:c,date:null}; renderRecords(); };
+      card.onclick=()=>{ navState={level:'dates',cluster:c,date:null,photoId:null}; renderRecords(); };
       grid.appendChild(card);
       if(withPhoto[0]){ getPhoto(withPhoto[0].photoId).then(du=>{ if(du){
         const im=document.createElement('img'); im.className='thumb'; im.src=du;
@@ -696,12 +739,27 @@ async function renderRecords(){
       const drs=byD[dt];
       const photoRec=drs.find(r=>r.photoId);
       const card=document.createElement('div'); card.className='folder';
+      const fdel=document.createElement('button'); fdel.className='fdel'; fdel.textContent='✕';
+      fdel.onclick=(e)=>{ e.stopPropagation();
+        if(!confirm(`${navState.cluster} の ${dt} を削除しますか?\n\nこの日の ${drs.length}個体の記録と写真が消えます。`)) return;
+        deleteRecordsWhere(r=>r.cluster===navState.cluster && r.date===dt); renderRecords();
+      };
+      card.appendChild(fdel);
       const thumb=document.createElement('div'); thumb.className='thumb empty'; thumb.textContent='📅';
       card.appendChild(thumb);
       const meta=document.createElement('div'); meta.className='fmeta';
       meta.innerHTML=`<div class="t">${dt}</div><div class="s">${drs.length}個体</div>`;
       card.appendChild(meta);
-      card.onclick=()=>{ navState={level:'individuals',cluster:navState.cluster,date:dt}; renderRecords(); };
+      card.onclick=()=>{
+        // count distinct sessions (photoIds, plus a synthetic '' bucket for records without photo)
+        const sess=[...new Set(drs.map(r=>r.photoId||''))];
+        if(sess.length>1){
+          navState={level:'sessions',cluster:navState.cluster,date:dt,photoId:null};
+        } else {
+          navState={level:'individuals',cluster:navState.cluster,date:dt,photoId:sess[0]||null};
+        }
+        renderRecords();
+      };
       grid.appendChild(card);
       if(photoRec){ getPhoto(photoRec.photoId).then(du=>{ if(du){
         const im=document.createElement('img'); im.className='thumb'; im.src=du; thumb.replaceWith(im);
@@ -709,10 +767,46 @@ async function renderRecords(){
     }
     body.appendChild(grid);
   }
-  else if(navState.level==='individuals'){
+  else if(navState.level==='sessions'){
     const drs=records.filter(r=>r.cluster===navState.cluster && r.date===navState.date);
-    // big photo for the day with number+mask overlay and a toggle
-    const photoRec=drs.find(r=>r.photoId);
+    // group by photoId (synthetic '' for records without photo)
+    const byP={}; drs.forEach(r=>{(byP[r.photoId||'']=byP[r.photoId||'']||[]).push(r);});
+    // session order: by timestamp embedded in photoId (no-photo bucket last)
+    const pids=Object.keys(byP).sort((a,b)=>{
+      if(a===''&&b!=='') return 1;
+      if(b===''&&a!=='') return -1;
+      const ta=Number(String(a).split('_').pop()), tb=Number(String(b).split('_').pop());
+      return (isFinite(ta)?ta:0)-(isFinite(tb)?tb:0);
+    });
+    const grid=document.createElement('div'); grid.className='grid-cards';
+    pids.forEach((pid,i)=>{
+      const recs=byP[pid];
+      const card=document.createElement('div'); card.className='folder';
+      const fdel=document.createElement('button'); fdel.className='fdel'; fdel.textContent='✕';
+      fdel.onclick=(e)=>{ e.stopPropagation();
+        const label=pid?photoIdToTimeLabel(pid):'写真なし';
+        if(!confirm(`${navState.cluster} ${navState.date} の ${i+1}回目（${label}）を削除しますか?\n\n${recs.length}個体の記録と写真が消えます。`)) return;
+        deleteRecordsWhere(r=>r.cluster===navState.cluster && r.date===navState.date && (r.photoId||'')===pid);
+        renderRecords();
+      };
+      card.appendChild(fdel);
+      const thumb=document.createElement('div'); thumb.className='thumb empty'; thumb.textContent='⏱';
+      card.appendChild(thumb);
+      const meta=document.createElement('div'); meta.className='fmeta';
+      const tlabel=pid?photoIdToTimeLabel(pid):'写真なし';
+      meta.innerHTML=`<div class="t">${i+1}回目 ・ ${tlabel}</div><div class="s">${recs.length}個体</div>`;
+      card.appendChild(meta);
+      card.onclick=()=>{ navState={level:'individuals',cluster:navState.cluster,date:navState.date,photoId:pid||null}; renderRecords(); };
+      grid.appendChild(card);
+      if(pid){ getPhoto(pid).then(du=>{ if(du){const im=document.createElement('img');im.className='thumb';im.src=du;thumb.replaceWith(im);} }); }
+    });
+    body.appendChild(grid);
+  }
+  else if(navState.level==='individuals'){
+    const drs=records.filter(r=>r.cluster===navState.cluster && r.date===navState.date
+      && (navState.photoId==null || (r.photoId||'')===navState.photoId));
+    // big photo for this session (or first available for the day) with number+mask overlay and a toggle
+    const photoRec = navState.photoId ? drs.find(r=>r.photoId===navState.photoId) : drs.find(r=>r.photoId);
     if(photoRec){
       const du=await getPhoto(photoRec.photoId);
       const ov=await getOverlay(photoRec.photoId);
@@ -803,7 +897,7 @@ function switchTab(which){
   $('tabRecords').classList.toggle('active',!cap);
   $('captureView').style.display=cap?'block':'none';
   $('recordsView').style.display=cap?'none':'block';
-  if(!cap){ navState={level:'clusters',cluster:null,date:null}; renderRecords(); }
+  if(!cap){ navState={level:'clusters',cluster:null,date:null,photoId:null}; renderRecords(); }
 }
 $('tabCapture').onclick=()=>switchTab('capture');
 $('tabRecords').onclick=()=>switchTab('records');
