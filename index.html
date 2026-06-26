@@ -430,6 +430,16 @@ async function runDetection(img){
       const swatch=`rgb(${rr/n|0},${gg/n|0},${bb/n|0})`;
       detections.push({box:[bx1,by1,bx2,by2],conf:d.conf,maskPx,hue,swatch,num:null,label:null,maskCoords,rejected:false});
     });
+    // order detections left→right (and top→bottom when horizontally close)
+    // so the list matches reading order and you can number 1,2,3 from the left
+    const avgW = detections.length ? detections.reduce((s,d)=>s+(d.box[2]-d.box[0]),0)/detections.length : 0;
+    const tol = avgW*0.6; // tomatoes whose centers are within this x-distance count as same column
+    detections.sort((a,b)=>{
+      const ax=(a.box[0]+a.box[2])/2, bx=(b.box[0]+b.box[2])/2;
+      if(Math.abs(ax-bx)>tol) return ax-bx;          // clearly left vs right
+      const ay=(a.box[1]+a.box[3])/2, by=(b.box[1]+b.box[3])/2;
+      return ay-by;                                   // same column → top first
+    });
     drawOverlay(); renderDetList();
     detList.style.display=detections.length?'block':'none';
     log(`<b>${selectedCluster} ・ 検出 ${detections.length}個</b>  推論${ms}ms`, detections.length?'ok':'err');
@@ -473,7 +483,7 @@ function renderDetList(){
       :`<div class="det-num ${d.num!=null?'set':'unset'}">${d.num!=null?('#'+d.num):'番号'}</div>`;
     item.innerHTML=`<div class="det-swatch" style="background:${d.swatch}"></div>
       <div class="det-info"><b>${hueTxt}</b><br>確信度 ${(d.conf*100|0)}% ・ ${d.maskPx}px ${d.label?('・ '+d.label):''}</div>${numCell}`;
-    item.addEventListener('click',()=>openModal(idx));
+    item.addEventListener('click',()=>openModal(idx,true));
     detItems.appendChild(item);
   });
   saveBtn.disabled=!detections.some(d=>d.num!=null && !d.rejected);
@@ -489,7 +499,7 @@ function detAt(x,y){
 cv.addEventListener('click',e=>{
   const rect=cv.getBoundingClientRect(),scale=cv.width/rect.width;
   const x=(e.clientX-rect.left)*scale,y=(e.clientY-rect.top)*scale;
-  const idx=detAt(x,y); if(idx>=0) openModal(idx);
+  const idx=detAt(x,y); if(idx>=0) openModal(idx,true);
 });
 
 // ---------- assignment modal ----------
@@ -498,7 +508,7 @@ const modalBg=$('modalBg');
 function usedNumsThisPhoto(){
   return [...new Set(detections.filter(d=>d.num!=null).map(d=>d.num))];
 }
-function openModal(idx){
+function openModal(idx,fresh=false){
   activeIdx=idx; const d=detections[idx];
   $('modalSub').textContent=`Hue ${d.hue>=0?d.hue.toFixed(1):'—'} のトマトに番号と熟度を割り当てます。`;
   // suggest next number = max used +1
@@ -530,7 +540,7 @@ function openModal(idx){
   else{rj.classList.remove('on');rj.textContent='誤検出にする';}
   const cur=$('curAssign');
   cur.textContent=d.num!=null?`現在: #${d.num}${d.label?(' ・ '+d.label):''}`:(d.label?`現在: ${d.label}（番号未設定）`:'番号未設定');
-  $('newNumInput').value='';
+  if(fresh) $('newNumInput').value='';
   modalBg.style.display='flex';
 }
 function assignNum(n){
